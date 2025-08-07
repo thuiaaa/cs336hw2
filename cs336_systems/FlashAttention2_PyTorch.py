@@ -45,12 +45,34 @@ class FlashAttention2_PyTorch(torch.autograd.Function):
             O[:, (i-1) * Bq:i * Bq, :] = Oi
             L[:, (i-1) * Bq:i * Bq] = Li
             ctx.save_for_backward(L, Q, K, V, O)
-        import pdb; pdb.set_trace()
+            ctx.is_casual = is_casual
+        # import pdb; pdb.set_trace()
         return O
     
     @staticmethod
-    def backward(ctx, grad_O, grad_L):
-        raise NotImplementedError("Backward pass is not implemented yet.")
+    def backward(ctx, dO):
+        L, Q, K, V, O = ctx.saved_tensors
+        is_casual = ctx.is_casual
+
+        dim_k = K.shape[-1]
+        scale =  dim_k ** 0.5 
+        S = torch.matmul(Q, K.transpose(-1,-2)) / scale
+        
+        if is_casual:
+            n_queries = S.shape[-2]
+            n_keys = S.shape[-1]
+            casual_mask = torch.tril(torch.ones(n_queries, n_keys, dtype=torch.bool, device=S.device))
+            S = torch.where(casual_mask, S, -1e6)
+
+        P = torch.exp(S - L.unsqueeze(-1))
+
+        dV = torch.matmul(P.transpose(-1,-2), dO)
+        dP = torch.matmul(dO, V.transpose(-1,-2))
+        D = torch.sum((O * dO), dim=-1)
+        dS = P * (dP - D.unsqueeze(-1))
+        dQ = torch.matmul(dS, K) / scale
+        dK = torch.matmul(dS.transpose(-1,-2), Q) / scale
+        return dQ, dK, dV, None
 
 
 
